@@ -1,0 +1,245 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Galáxia de Bolso</title>
+<style>
+  * { box-sizing: border-box }
+  body { margin:0; min-height:100vh; display:grid; place-items:center; padding:22px; color:#eaf6ff; font-family:system-ui,sans-serif; background:radial-gradient(ellipse at 50% 0%,#172b57,#080d1c 68%); }
+  main { width:min(97vw,1080px); text-align:center }
+  h1 { margin:0; font-size:clamp(1.6rem,5vw,2.3rem); letter-spacing:.08em; text-transform:uppercase; text-shadow:0 0 18px #64dcff80 }
+  .sub { color:#9db4d6; margin:4px 0 16px }
+  .layout { display:grid; grid-template-columns:minmax(0,760px) 270px; gap:20px; align-items:start; justify-content:center }
+  .game-column { min-width:0 }
+  .hud { display:flex; justify-content:space-between; gap:10px; max-width:760px; margin:0 auto 8px; font-weight:700; color:#c7dafa }
+  .hud b { color:#fff }
+  canvas { display:block; width:100%; height:auto; border:1px solid #52739e; border-radius:12px; background:#080e23; box-shadow:0 14px 55px #0009,0 0 28px #36caff22; touch-action:none }
+  .controls { color:#9db4d6; font-size:.9rem; margin:11px 0 0 }
+  button { padding:10px 16px; border:1px solid #7ce8ff; border-radius:8px; color:#041222; background:linear-gradient(135deg,#95f2ff,#57baff); font-weight:900; letter-spacing:.04em; cursor:pointer; box-shadow:0 0 18px #51cfff44 }
+  button:hover { filter:brightness(1.12) }
+  #start { margin-top:14px; padding:11px 22px }
+  .radio { padding:16px; border:1px solid #36547c; border-radius:12px; background:linear-gradient(160deg,#132344,#0b1429); text-align:left; box-shadow:0 12px 35px #0005 }
+  .radio h2 { margin:0 0 5px; font-size:1.1rem; color:#eaf6ff }
+  .radio p { margin:0 0 12px; color:#9db4d6; font-size:.84rem; line-height:1.4 }
+  .radio form { display:grid; gap:8px }
+  .radio input { width:100%; min-width:0; padding:10px; border:1px solid #456184; border-radius:7px; color:#eef7ff; background:#081329; font:inherit }
+  .radio input::placeholder { color:#8297b6 }
+  .radio button { width:100% }
+  .radio iframe { display:block; width:100%; height:200px; margin-top:12px; border:0; border-radius:8px; background:#050914 }
+  #radioMessage { min-height:2.4em; margin-top:8px; color:#a9c2e6; font-size:.8rem }
+  .sound-toggle { margin-top:10px; padding:7px 10px; border-color:#46648b; color:#d5e8ff; background:#172b4a; box-shadow:none; font-size:.82rem }
+  @media (max-width:900px) { .layout { grid-template-columns:minmax(0,760px); } .radio { width:min(100%,760px); margin:0 auto; } }
+  @media (max-width:520px) { body { padding:12px 8px } .hud { font-size:.78rem } .radio { padding:12px } }
+</style>
+</head>
+<body>
+<main>
+  <h1>Galáxia de Bolso</h1>
+  <p class="sub">Uma pequena homenagem aos arcades de invasores espaciais.</p>
+  <div class="layout">
+    <section class="game-column" aria-label="Jogo">
+      <div class="hud"><span>PONTOS <b id="score">0</b></span><span>RECORDE <b id="best">0</b></span><span>ONDA <b id="wave">1</b></span><span>VIDAS <b id="lives">♥ ♥ ♥</b></span></div>
+      <canvas id="game" width="760" height="540" aria-label="Jogo de nave espacial"></canvas>
+      <button id="start">INICIAR MISSÃO</button>
+      <p class="controls">← → ou A / D para pilotar · Segure Espaço para disparar · No celular, arraste a nave e toque para atirar</p>
+    </section>
+    <aside class="radio">
+      <h2>📻 Rádio da nave</h2>
+      <p>Cole um link de vídeo ou playlist do YouTube para ouvir enquanto joga.</p>
+      <form id="radioForm">
+        <input id="youtubeUrl" type="url" placeholder="Cole aqui o link do YouTube" aria-label="Link do YouTube">
+        <button type="submit">CARREGAR MÚSICA</button>
+      </form>
+      <div id="radioMessage" role="status">Aperte reproduzir no player quando estiver pronto.</div>
+      <div id="playerSlot"></div>
+      <button id="soundToggle" class="sound-toggle" type="button">🔊 Efeitos: ligados</button>
+    </aside>
+  </div>
+</main>
+<script>
+// O canvas é a tela do jogo; o JavaScript desenha cada quadro.
+const canvas = document.querySelector('#game');
+const ctx = canvas.getContext('2d');
+const scoreEl = document.querySelector('#score');
+const bestEl = document.querySelector('#best');
+const waveEl = document.querySelector('#wave');
+const livesEl = document.querySelector('#lives');
+const button = document.querySelector('#start');
+const W = canvas.width, H = canvas.height;
+const keys = new Set();
+let state = 'ready', score = 0, wave = 1, lives = 3;
+let player, enemies = [], shots = [], enemyShots = [], particles = [], stars = [];
+let lastShot = 0, lastEnemyShot = 0, lastFrame = 0, formationDir = 1, formationOffset = 0, shake = 0;
+let audioContext = null, soundOn = true, bestScore = 0, recordSoundPlayed = false;
+try { bestScore = Number(localStorage.getItem('galaxiaBest') || 0); } catch (_) {}
+bestEl.textContent = bestScore;
+
+// Sons curtos são sintetizados pelo navegador; não precisamos baixar arquivos de áudio.
+function ensureAudio() {
+  if (!audioContext) audioContext = new (window.AudioContext || window.webkitAudioContext)();
+  if (audioContext.state === 'suspended') audioContext.resume();
+}
+function tone(startHz, endHz, duration, type='square', volume=.06) {
+  if (!soundOn) return;
+  ensureAudio();
+  const now = audioContext.currentTime;
+  const osc = audioContext.createOscillator();
+  const gain = audioContext.createGain();
+  osc.type = type;
+  osc.frequency.setValueAtTime(startHz, now);
+  osc.frequency.exponentialRampToValueAtTime(Math.max(1,endHz), now + duration);
+  gain.gain.setValueAtTime(volume, now);
+  gain.gain.exponentialRampToValueAtTime(.001, now + duration);
+  osc.connect(gain); gain.connect(audioContext.destination);
+  osc.start(now); osc.stop(now + duration);
+}
+function soundShot(){ tone(760,390,.055,'square',.025); }
+function soundHit(){ tone(300,120,.09,'triangle',.055); }
+function soundExplosion(){ tone(190,45,.22,'sawtooth',.07); }
+function soundDamage(){ tone(240,70,.32,'square',.08); }
+function soundRecord(){ tone(520,780,.12,'triangle',.07); setTimeout(()=>tone(780,1050,.15,'triangle',.07),115); }
+function soundDefeat(){ tone(420,300,.24,'triangle',.08); setTimeout(()=>tone(300,180,.3,'triangle',.08),220); setTimeout(()=>tone(180,80,.55,'sawtooth',.06),500); }
+document.querySelector('#soundToggle').addEventListener('click', (event) => {
+  soundOn = !soundOn;
+  event.currentTarget.textContent = soundOn ? '🔊 Efeitos: ligados' : '🔇 Efeitos: desligados';
+  if (soundOn) { ensureAudio(); soundRecord(); }
+});
+
+// O painel aceita links de vídeo (youtube.com / youtu.be) e links de playlist.
+document.querySelector('#radioForm').addEventListener('submit', (event) => {
+  event.preventDefault();
+  const message = document.querySelector('#radioMessage');
+  const raw = document.querySelector('#youtubeUrl').value.trim();
+  let url;
+  try { url = new URL(raw); } catch (_) { message.textContent = 'Cole um link válido do YouTube.'; return; }
+  const host = url.hostname.toLowerCase().replace(/^www\./,'').replace(/^m\./,'');
+  if (!['youtube.com','music.youtube.com','youtu.be'].includes(host)) { message.textContent = 'Esse link não parece ser do YouTube.'; return; }
+  const videoId = host === 'youtu.be' ? url.pathname.split('/').filter(Boolean)[0] : (url.searchParams.get('v') || url.pathname.match(/\/(?:embed|shorts|live)\/([^/?]+)/)?.[1]);
+  const playlistId = url.searchParams.get('list');
+  let embedUrl = '';
+  if (videoId && /^[\w-]{11}$/.test(videoId)) embedUrl = `https://www.youtube-nocookie.com/embed/${videoId}?playsinline=1&rel=0`;
+  else if (playlistId && /^[\w-]+$/.test(playlistId)) embedUrl = `https://www.youtube-nocookie.com/embed/videoseries?list=${encodeURIComponent(playlistId)}`;
+  if (!embedUrl) { message.textContent = 'Não encontrei um vídeo ou uma playlist nesse link.'; return; }
+  const frame = document.createElement('iframe');
+  frame.src = embedUrl;
+  frame.title = 'Player de música do YouTube';
+  frame.allow = 'accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share';
+  frame.referrerPolicy = 'strict-origin-when-cross-origin';
+  frame.allowFullscreen = true;
+  const slot = document.querySelector('#playerSlot');
+  slot.replaceChildren(frame);
+  message.textContent = 'Player carregado. Aperte reproduzir para começar a ouvir.';
+});
+
+// Estrelas de velocidades diferentes dão profundidade ao espaço.
+for (let i=0;i<90;i++) stars.push({x:Math.random()*W,y:Math.random()*H,s:.5+Math.random()*1.8,v:.25+Math.random()*1.1});
+function newPlayer(){ return {x:W/2,y:H-56,w:34,h:29,speed:5.3,invulnerable:0,tilt:0,targetTilt:0}; }
+function makeWave(){
+  enemies=[];
+  // Duas fileiras com espaço entre naves para a formação ficar fácil de ler.
+  for(let row=0;row<2;row++) for(let col=0;col<6;col++) enemies.push({x:130+col*100,y:78+row*58,baseX:130+col*100,row,col,hp:row===0?2:1,phase:Math.random()*6.28});
+  formationOffset=0; formationDir=1; waveEl.textContent=wave;
+}
+function start(){
+  ensureAudio(); score=0; wave=1; lives=3; recordSoundPlayed=false; player=newPlayer(); shots=[]; enemyShots=[]; particles=[]; state='playing';
+  scoreEl.textContent='0'; livesEl.textContent='♥ ♥ ♥'; button.textContent='RECOMEÇAR'; makeWave();
+  lastFrame=performance.now(); requestAnimationFrame(loop);
+}
+function end(){ state='over'; button.textContent='TENTAR DE NOVO'; soundDefeat(); }
+function fire(){
+  const now=performance.now(); if(now-lastShot<150) return; lastShot=now;
+  // Cada disparo lança três projéteis em leque; os laterais abrem um pouco a trajetória.
+  shots.push({x:player.x,y:player.y-18,v:13.5,vx:0});
+  shots.push({x:player.x-9,y:player.y-13,v:12.7,vx:-1.05});
+  shots.push({x:player.x+9,y:player.y-13,v:12.7,vx:1.05});
+  soundShot();
+}
+function burst(x,y,color,count=10){ for(let i=0;i<count;i++){const a=Math.random()*Math.PI*2,s=1+Math.random()*3;particles.push({x,y,vx:Math.cos(a)*s,vy:Math.sin(a)*s,life:25+Math.random()*15,color});} }
+function update(dt){
+  for(const s of stars){s.y+=s.v*dt;if(s.y>H){s.y=0;s.x=Math.random()*W;}}
+  if(state==='over'){for(const p of particles){p.x+=p.vx*dt;p.y+=p.vy*dt;p.vx*=.98;p.vy*=.98;p.life-=dt;}particles=particles.filter(p=>p.life>0);shake=Math.max(0,shake-dt);return;}if(state!=='playing') return;
+  player.invulnerable=Math.max(0,player.invulnerable-dt);
+  let direction=0;if(keys.has('arrowleft')||keys.has('a')) direction--;if(keys.has('arrowright')||keys.has('d')) direction++;player.x+=direction*player.speed*dt;player.targetTilt=direction*.34;if(!direction)player.targetTilt*=Math.pow(.82,dt);player.tilt+=(player.targetTilt-player.tilt)*Math.min(1,.18*dt);
+  player.x=Math.max(24,Math.min(W-24,player.x));
+  if(keys.has(' ')) fire();
+  const alive=enemies.length;
+  formationOffset+=formationDir*(.45+wave*.035)*dt;
+  if(Math.abs(formationOffset)>34) formationDir*=-1;
+  for(const e of enemies){
+    if(!e.diving) e.x=e.baseX+formationOffset+Math.sin(performance.now()/500+e.phase)*4;
+    if(e.diving){e.y+=e.diveSpeed*dt;e.x+=e.diveDir*1.05*dt;if(e.y>H+25){e.y=78+e.row*58;e.diving=false;}}
+  }
+  if(alive && performance.now()-lastEnemyShot>Math.max(460,1150-wave*55)){
+    const e=enemies[Math.floor(Math.random()*enemies.length)]; enemyShots.push({x:e.x,y:e.y+12,v:2.8+wave*.18}); lastEnemyShot=performance.now();
+  }
+  // Só uma nave mergulha por vez, com velocidade moderada para dar tempo de desviar.
+  if(!enemies.some(e=>e.diving) && Math.random()<.00085*dt*60 && enemies.length){
+    const e=enemies[Math.floor(Math.random()*enemies.length)]; e.diving=true;e.diveSpeed=1.75+wave*.12;e.diveDir=Math.sign(player.x-e.x)||1;
+  }
+  for(const b of shots){b.y-=b.v*dt;b.x+=b.vx*dt;}
+  shots=shots.filter(b=>b.y>-12&&b.x>-12&&b.x<W+12);
+  for(const b of enemyShots) b.y+=b.v*dt;
+  enemyShots=enemyShots.filter(b=>b.y<H+10);
+  for(let i=shots.length-1;i>=0;i--){
+    const b=shots[i];let hit=false;
+    for(let j=enemies.length-1;j>=0;j--){
+      const e=enemies[j];
+      if(Math.abs(b.x-e.x)<19 && Math.abs(b.y-e.y)<15){
+        e.hp--;burst(b.x,b.y,'#71eaff',4);shots.splice(i,1);hit=true;soundHit();
+        if(e.hp<=0){
+          burst(e.x,e.y,e.row===0?'#ff70c8':'#ffd166',15);score+=e.row===0?35:10;scoreEl.textContent=score;enemies.splice(j,1);soundExplosion();
+          if(score>bestScore){bestScore=score;bestEl.textContent=bestScore;try{localStorage.setItem('galaxiaBest',String(bestScore));}catch(_){}if(!recordSoundPlayed){soundRecord();recordSoundPlayed=true;}}
+        }
+        break;
+      }
+    }
+    if(hit) continue;
+  }
+  if(!enemies.length){wave++;makeWave();}
+  if(player.invulnerable<=0){
+    const hit=enemyShots.some(b=>Math.abs(b.x-player.x)<18&&Math.abs(b.y-player.y)<18);
+    const diving=enemies.some(e=>e.diving&&Math.abs(e.x-player.x)<24&&Math.abs(e.y-player.y)<20);
+    if(hit||diving){
+      if(hit) enemyShots=enemyShots.filter(b=>!(Math.abs(b.x-player.x)<18&&Math.abs(b.y-player.y)<18));
+      lives--;livesEl.textContent=Array(Math.max(0,lives)).fill('♥').join(' ')||'—';player.invulnerable=95;shake=12;burst(player.x,player.y,'#ff688b',22);soundDamage();if(lives<=0)end();
+    }
+  }
+  for(const p of particles){p.x+=p.vx*dt;p.y+=p.vy*dt;p.vx*=.98;p.vy*=.98;p.life-=dt;}
+  particles=particles.filter(p=>p.life>0);shake=Math.max(0,shake-dt);
+}
+function drawShip(x,y,scale=1,color='#7ce8ff',tilt=0){
+  ctx.save();ctx.translate(x,y+Math.sin(performance.now()/90));ctx.rotate(tilt);ctx.scale(scale,scale);ctx.shadowBlur=22;ctx.shadowColor=color;ctx.fillStyle=color;
+  ctx.beginPath();ctx.moveTo(0,-20);ctx.lineTo(17,14);ctx.lineTo(5,10);ctx.lineTo(0,16);ctx.lineTo(-5,10);ctx.lineTo(-17,14);ctx.closePath();ctx.fill();
+  ctx.fillStyle='#fff';ctx.fillRect(-2,-7,4,12);ctx.fillStyle='#ff9f6e';ctx.fillRect(-8,15,4,7+Math.random()*4);ctx.fillRect(4,15,4,7+Math.random()*4);ctx.restore();
+}
+function drawEnemy(e){const palette=['#ff72bd','#ffd166','#83f28f'];const c=palette[e.row];ctx.save();ctx.translate(e.x,e.y);ctx.shadowBlur=12;ctx.shadowColor=c;ctx.fillStyle=c;ctx.beginPath();ctx.moveTo(0,13);ctx.lineTo(-17,2);ctx.lineTo(-12,-10);ctx.lineTo(-5,-5);ctx.lineTo(0,-13);ctx.lineTo(5,-5);ctx.lineTo(12,-10);ctx.lineTo(17,2);ctx.closePath();ctx.fill();ctx.fillStyle='#18213d';ctx.fillRect(-9,-2,5,4);ctx.fillRect(4,-2,5,4);if(e.hp>1){ctx.strokeStyle='#fff';ctx.strokeRect(-19,-15,38,31);}ctx.restore();}
+function draw(){
+  ctx.save();if(shake)ctx.translate((Math.random()-.5)*shake,(Math.random()-.5)*shake);
+  const bg=ctx.createLinearGradient(0,0,0,H);bg.addColorStop(0,'#0b1530');bg.addColorStop(1,'#080d1d');ctx.fillStyle=bg;ctx.fillRect(0,0,W,H);
+  for(const s of stars){ctx.fillStyle=`rgba(180,220,255,${.25+s.v*.35})`;ctx.fillRect(s.x,s.y,s.s,s.s*2);}
+  const glow=ctx.createLinearGradient(0,H-50,0,H);glow.addColorStop(0,'transparent');glow.addColorStop(1,'#2865a522');ctx.fillStyle=glow;ctx.fillRect(0,H-50,W,50);
+  for(const e of enemies)drawEnemy(e);
+  ctx.shadowBlur=14;ctx.shadowColor='#8cf7ff';ctx.fillStyle='#d7fbff';for(const b of shots){ctx.fillRect(b.x-2,b.y-10,4,14);ctx.fillStyle='#73eaff';ctx.fillRect(b.x-5,b.y+2,10,3);ctx.fillStyle='#d7fbff';}
+  ctx.shadowColor='#ff658f';ctx.fillStyle='#ff7895';for(const b of enemyShots){ctx.beginPath();ctx.arc(b.x,b.y,4,0,Math.PI*2);ctx.fill();}
+  for(const p of particles){ctx.globalAlpha=Math.max(0,p.life/35);ctx.fillStyle=p.color;ctx.fillRect(p.x,p.y,3,3);}ctx.globalAlpha=1;
+  if(player && state==='playing' && (player.invulnerable<=0||Math.floor(player.invulnerable/6)%2===0))drawShip(player.x,player.y,1,'#7ce8ff',player.tilt);
+  if(state!=='playing'){
+    ctx.fillStyle=state==='over'?'#180713dd':'#050a17bb';ctx.fillRect(0,0,W,H);ctx.textAlign='center';ctx.shadowBlur=22;ctx.shadowColor=state==='over'?'#ff365e':'#63dfff';ctx.fillStyle=state==='over'?'#ffdce3':'#f4fbff';ctx.font='900 42px system-ui';ctx.fillText(state==='over'?'YOU LOSE':'PRONTO, PILOTO?',W/2,H/2-12);ctx.shadowBlur=0;ctx.fillStyle='#c3d4ee';ctx.font='16px system-ui';ctx.fillText(state==='over'?`Nave destruída · Pontuação: ${score} · Onda: ${wave}`:'Derrube a formação e sobreviva às ondas.',W/2,H/2+24);
+  }
+  ctx.restore();
+}
+function loop(now){if(state==='ready')return;const dt=Math.min(2,(now-lastFrame)/16.67);lastFrame=now;update(dt);draw();if(state==='playing'||state==='over')requestAnimationFrame(loop);}
+window.addEventListener('keydown',e=>{const k=e.key.toLowerCase();if(['arrowleft','arrowright',' '].includes(k))e.preventDefault();keys.add(k);});
+window.addEventListener('keyup',e=>keys.delete(e.key.toLowerCase()));
+canvas.addEventListener('pointermove',e=>{if(!player||e.buttons===0)return;const r=canvas.getBoundingClientRect();const next=(e.clientX-r.left)*W/r.width;player.targetTilt=Math.max(-.4,Math.min(.4,(next-player.x)*.045));player.x=next;player.x=Math.max(24,Math.min(W-24,player.x));});
+canvas.addEventListener('pointerdown',()=>{if(state==='playing')fire();});
+button.addEventListener('click',start);
+draw();
+</script>
+</body>
+</html>
+
+
+
+
